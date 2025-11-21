@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>수면 감지 — Teachable Machine</title>
+  <style>
+    body { font-family:"Noto Sans KR", sans-serif; margin:0; padding:20px; background:#f5f5f5; }
+    h2 { margin-bottom:8px; }
+    video { width:100%; max-width:420px; background:black; border-radius:8px; }
+    #overlay {
+      position:fixed; bottom:20px; right:20px;
+      background:rgba(0,0,0,0.85); color:white;
+      padding:14px 18px; border-radius:10px; font-size:18px;
+      display:none; z-index:9999;
+    }
+    button { padding:8px 14px; border-radius:8px; border:1px solid #ccc; cursor:pointer; }
+    button.primary { background:#1c6bff; color:white; border:none; }
+    #errorBox {
+      background:#ffe3e3; color:#c20000; padding:12px;
+      border-radius:10px; margin:10px 0; display:none;
+    }
+  </style>
+
+  <!-- TensorFlow.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0"></script>
+</head>
+
+<body>
+  <h2>Teachable Machine – Class 1 감지 알림</h2>
+  <p style="font-size:13px;color:#444">
+    도움 사이트: <a href="https://gptonline.ai/ko/" target="_blank">gptonline.ai/ko</a>
+  </p>
+
+  <div id="errorBox"></div>
+
+  <video id="webcam" autoplay playsinline muted></video>
+
+  <div style="margin-top:10px;">
+    <button id="startBtn" class="primary">Start</button>
+    <button id="stopBtn" disabled>Stop</button>
+  </div>
+
+  <p id="status" style="margin-top:10px;color:#333;">대기 중…</p>
+
+  <div id="overlay">자고 있다</div>
+
+<script>
+const MODEL_URL = "https://teachablemachine.withgoogle.com/models/dw7EhEr_3/";
+let model = null, metadata = null, class1Index = null;
+let stream = null, running = false, rafId = null;
+let lastAlert = 0;
+const COOLDOWN = 4000;
+
+const video = document.getElementById("webcam");
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const errorBox = document.getElementById("errorBox");
+const statusEl = document.getElementById("status");
+const overlay = document.getElementById("overlay");
+
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function beep() {
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.connect(g); g.connect(audioCtx.destination);
+  o.frequency.value = 700; o.type = "sine";
+  g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.3, audioCtx.currentTime + 0.02);
+  o.start();
+  g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.3);
+  o.stop(audioCtx.currentTime + 0.32);
+}
+
+function showError(msg){
+  errorBox.style.display = "block";
+  errorBox.innerText = msg;
+}
+
+async function loadModel() {
+  statusEl.innerText = "모델 로딩 중…";
+  model = await tf.loadGraphModel(MODEL_URL + "model.json");
+
+  const md = await fetch(MODEL_URL + "metadata.json");
+  metadata = await md.json();
+
+  class1Index = metadata.labels.indexOf("Class 1");
+  statusEl.innerText = "모델 로딩 완료";
+}
+
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video:true });
+    video.srcObject = stream;
+    await video.play();
+  } catch (err) {
+    showError("카메라 접근 실패: 브라우저 주소창 오른쪽의 권한 설정에서 카메라를 허용해주세요.");
+    throw err;
+  }
+}
+
+function alertSleeping(prob){
+  overlay.innerText = `자고 있다 (${(prob*100).toFixed(1)}%)`;
+  overlay.style.display = "block";
+  beep();
+  setTimeout(()=> overlay.style.display="none", 2500);
+}
+
+async function loop() {
+  if (!running) return;
+
+  const size = 224;
+  const img = tf.browser.fromPixels(video).resizeNearestNeighbor([size, size]).toFloat().expandDims(0).div(255);
+  const pred = model.predict(img);
+  const data = await pred.data();
+  img.dispose(); pred.dispose();
+
+  const p = data[class1Index] ?? 0;
+  statusEl.innerText = `Class 1 확률: ${(p*100).toFixed(1)}%`;
+
+  const now = Date.now();
+  if (p > 0.8 && now - lastAlert > COOLDOWN) {
+    lastAlert = now;
+    alertSleeping(p);
+  }
+
+  rafId = requestAnimationFrame(loop);
+}
+
+startBtn.onclick = async () => {
+  startBtn.disabled = true;
+  errorBox.style.display = "none";
+
+  if (audioCtx.state === "suspended") await audioCtx.resume();
+
+  try {
+    await loadModel();
+    await startCamera();
+  } catch (e) {
+    startBtn.disabled = false;
+    return;
+  }
+
+  running = true;
+  stopBtn.disabled = false;
+  loop();
+};
+
+stopBtn.onclick = () => {
+  running = false;
+  stopBtn.disabled = true;
+  startBtn.disabled = false;
+
+  if (rafId) cancelAnimationFrame(rafId);
+
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+
+  statusEl.innerText = "정지됨";
+};
+</script>
+
+<p style="margin-top:20px; font-size:12px; color:#555;">
+  더 많은 도구: <a href="https://gptonline.ai/ko/" target="_blank">gptonline.ai/ko</a>
+</p>
+</body>
+</html>
